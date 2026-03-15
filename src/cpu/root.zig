@@ -20,6 +20,7 @@ const FLAG_AUXILIARY: u8 = 0x1 << 0x4;
 pub const itl8080 = struct {
     memory: [MEMORY_SIZE]u8,
     registers: [REGISTER_COUNT]u8,
+    ports: [256]u8,
     flags: u8,
     pc: u16,
     sp: u16,
@@ -32,6 +33,7 @@ pub const itl8080 = struct {
         return .{
             .memory = memory,
             .registers = std.mem.zeroes([REGISTER_COUNT]u8),
+            .ports = std.mem.zeroes([256]u8),
             .flags = 0,
             .pc = 0,
             .sp = 0,
@@ -159,6 +161,18 @@ pub const itl8080 = struct {
                 self.callIf(true);
                 return;
             }, // call
+            0xDB => {
+                const port = self.memory[self.pc];
+                self.registers[REG_A] = self.ports[port];
+                self.pc += 1;
+                return;
+            }, // input
+            0xD3 => {
+                const port = self.memory[self.pc];
+                self.ports[port] = self.registers[REG_A];
+                self.pc += 1;
+                return;
+            }, // input
             else => {},
         }
 
@@ -1157,4 +1171,22 @@ test "rar rotate accumulator right through carry" {
 
     try std.testing.expectEqual(@as(u8, 0x80), cpu.registers[REG_A]);
     try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+}
+
+test "in read from port" {
+    var cpu = itl8080.init(&[_]u8{ 0xDB, 0x05 });
+    cpu.ports[0x05] = 0xAA;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0xAA), cpu.registers[REG_A]);
+    try std.testing.expectEqual(@as(u16, 0x0002), cpu.pc);
+}
+
+test "out write to port" {
+    var cpu = itl8080.init(&[_]u8{ 0xD3, 0x0A });
+    cpu.registers[REG_A] = 0x55;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x55), cpu.ports[0x0A]);
+    try std.testing.expectEqual(@as(u16, 0x0002), cpu.pc);
 }
