@@ -11,11 +11,11 @@ const REG_E = 0x3;
 const REG_H = 0x4;
 const REG_L = 0x5;
 
-const FLAG_ZERO = 0x1 << 0x6;
-const FLAG_CARRY = 0x1 << 0x0;
-const FLAG_SIGN = 0x1 << 0x7;
-const FLAG_PARITY = 0x1 << 0x2;
-const FLAG_AUXILIARY = 0x1 << 0x4;
+const FLAG_ZERO: u8 = 0x1 << 0x6;
+const FLAG_CARRY: u8 = 0x1 << 0x0;
+const FLAG_SIGN: u8 = 0x1 << 0x7;
+const FLAG_PARITY: u8 = 0x1 << 0x2;
+const FLAG_AUXILIARY: u8 = 0x1 << 0x4;
 
 pub const itl8080 = struct {
     memory: [MEMORY_SIZE]u8,
@@ -58,7 +58,7 @@ pub const itl8080 = struct {
         const inst = opcode & 0xF;
 
         switch (inst) {
-            0x6 => self.mvi(opcode),
+            0x6, 0xE => self.mvi(opcode),
             0xB => self.dcx(opcode),
             0x3 => self.inc(opcode),
             0x1 => self.lxi(opcode),
@@ -72,8 +72,13 @@ pub const itl8080 = struct {
     }
 
     fn arithmetic(self: *itl8080, opcode: u8) void {
-        _ = self;
-        _ = opcode;
+        const inst = (opcode >> 3) & 0x7;
+
+        switch (inst) {
+            0x0 => self.add(opcode),
+            0x1 => self.adc(opcode),
+            else => {},
+        }
     }
 
     fn branch(self: *itl8080, opcode: u8) void {
@@ -89,6 +94,47 @@ pub const itl8080 = struct {
             0b10 => return .{ REG_H, REG_L },
             // 0b11 is for stack pointer, just return REG_A for now
             else => return .{ REG_A, REG_A },
+        }
+    }
+
+    fn setZero(self: *itl8080, result: u8) void {
+        if (result == 0) {
+            self.flags |= FLAG_ZERO;
+        } else {
+            self.flags &= ~FLAG_ZERO;
+        }
+    }
+
+    fn setSign(self: *itl8080, result: u8) void {
+        // if most sig bit is 1, set sign flag
+        if (result & 0x80 != 0) {
+            self.flags |= FLAG_SIGN;
+        } else {
+            self.flags &= ~FLAG_SIGN;
+        }
+    }
+
+    fn setParity(self: *itl8080, result: u8) void {
+        if (@popCount(result) % 2 == 0) {
+            self.flags |= FLAG_PARITY;
+        } else {
+            self.flags &= ~FLAG_PARITY;
+        }
+    }
+
+    fn setCarry(self: *itl8080, result: u16) void {
+        if (result > 0xFF) {
+            self.flags |= FLAG_CARRY;
+        } else {
+            self.flags &= ~FLAG_CARRY;
+        }
+    }
+
+    fn setAuxCarry(self: *itl8080, a: u8, b: u8) void {
+        if (((a & 0xF) + (b & 0xF)) > 0xF) {
+            self.flags |= FLAG_AUXILIARY;
+        } else {
+            self.flags &= ~FLAG_AUXILIARY;
         }
     }
 
@@ -169,6 +215,50 @@ pub const itl8080 = struct {
         } else {
             self.registers[destination] = self.registers[source];
         }
+    }
+
+    fn add(self: *itl8080, opcode: u8) void {
+        const source = opcode & 0x7;
+
+        // memory
+        const source_value = if (source == 0x6) v: {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            break :v self.memory[addr];
+        } else v: {
+            break :v self.registers[source];
+        };
+
+        const result: u16 = @as(u16, self.registers[REG_A]) + @as(u16, source_value);
+
+        self.setZero(@truncate(result));
+        self.setSign(@truncate(result));
+        self.setParity(@truncate(result));
+        self.setCarry(result);
+        self.setAuxCarry(self.registers[REG_A], source_value);
+
+        self.registers[REG_A] = @truncate(result);
+    }
+
+    fn adc(self: *itl8080, opcode: u8) void {
+        const source = opcode & 0x7;
+
+        // memory
+        const source_value = if (source == 0x6) v: {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            break :v self.memory[addr];
+        } else v: {
+            break :v self.registers[source];
+        };
+
+        const result: u16 = @as(u16, self.registers[REG_A]) + @as(u16, source_value) + (self.flags & FLAG_CARRY);
+
+        self.setZero(@truncate(result));
+        self.setSign(@truncate(result));
+        self.setParity(@truncate(result));
+        self.setCarry(result);
+        self.setAuxCarry(self.registers[REG_A], source_value);
+
+        self.registers[REG_A] = @truncate(result);
     }
 };
 
@@ -288,4 +378,36 @@ test "lxi sp, d16 dcx sp" {
     try cpu.step();
 
     try std.testing.expectEqual(0x1233, cpu.sp);
+}
+
+test "mvi b, add b" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x06, 0xA, 0x80 });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi c, add c" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x0E, 0xA, 0x81 });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi d, add d" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x16, 0xA, 0x82 });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi e, add e" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x1E, 0xA, 0x83 });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
