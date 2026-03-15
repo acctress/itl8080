@@ -58,11 +58,46 @@ pub const itl8080 = struct {
         const inst = opcode & 0x7;
 
         switch (inst) {
+            // MVI
             0x6 => {
                 const destination = (opcode >> 3) & 0x7;
                 const imm = self.memory[self.pc];
                 self.registers[destination] = imm;
                 self.pc += 1;
+            },
+
+            // LXI
+            0x1 => {
+                const low_byte = self.memory[self.pc];
+                const high_byte = self.memory[self.pc + 1];
+                const value = @as(u16, high_byte) << 8 | low_byte;
+                const reg_pair = (opcode >> 4) & 0x3;
+
+                switch (reg_pair) {
+                    // B
+                    0b00 => {
+                        self.registers[REG_B] = high_byte;
+                        self.registers[REG_C] = low_byte;
+                    },
+                    // D
+                    0b01 => {
+                        self.registers[REG_D] = high_byte;
+                        self.registers[REG_E] = low_byte;
+                    },
+                    // H
+                    0b10 => {
+                        self.registers[REG_H] = high_byte;
+                        self.registers[REG_L] = low_byte;
+                    },
+                    // SP
+                    0b11 => {
+                        self.sp = value;
+                    },
+
+                    else => {},
+                }
+
+                self.pc += 2;
             },
 
             else => {},
@@ -75,6 +110,7 @@ pub const itl8080 = struct {
         const destination = (opcode >> 3) & 0x7;
         const source = opcode & 0x7;
 
+        // MOV
         if (destination == 0x6 or source == 0x6) {
             const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
 
@@ -111,4 +147,19 @@ test "mvi b, 0xa mov c, b" {
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_B]);
     try std.testing.expectEqual(0xA, cpu.registers[REG_C]);
+}
+
+test "lxi b, d16" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x01, 0x34, 0x12 });
+    try cpu.step();
+
+    try std.testing.expectEqual(0x12, cpu.registers[REG_B]);
+    try std.testing.expectEqual(0x34, cpu.registers[REG_C]);
+}
+
+test "lxi sp, d16" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x31, 0x34, 0x12 });
+    try cpu.step();
+
+    try std.testing.expectEqual(0x1234, cpu.sp);
 }

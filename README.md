@@ -1,21 +1,6 @@
 # itl8080
 An emulator for the Intel 8080 CPU Instruction Set
 
-# Recent Change
-Implemented the MOV and MVI instructions:
-```zig
-{ 0x06, 0xA, 0x48 }
-```
-Equivalent to
-```asm
-MVI B, 0xA
-MOV C, B
-```
-
-`MVI B, 0xA` loads the immediate value `0xA` into register `B`.
-
-`MOV C, B` copies register `B` into register `C` (`MOV DEST, SRC`).
-
 # Specs & Mental Logs
 ### Registers
 A static RAM array organised into six 16-bit registers.
