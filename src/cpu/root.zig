@@ -59,12 +59,67 @@ pub const itl8080 = struct {
     }
 
     fn control(self: *itl8080, opcode: u8) void {
+        switch (opcode) {
+            // stc
+            0x37 => {
+                self.flags |= FLAG_CARRY;
+                return;
+            },
+            // cmc
+            0x3F => {
+                self.flags ^= FLAG_CARRY;
+                return;
+            },
+            // cma
+            0x2F => {
+                self.registers[REG_A] = ~self.registers[REG_A];
+                return;
+            },
+            // rlc
+            0x07 => {
+                const bit7 = (self.registers[REG_A] >> 0x7) & 0x1;
+                self.registers[REG_A] <<= 0x1;
+                self.registers[REG_A] |= bit7;
+                if (bit7 != 0) self.flags |= FLAG_CARRY else self.flags &= ~FLAG_CARRY;
+                return;
+            },
+            // rrc
+            0x0F => {
+                const bit0 = self.registers[REG_A] & 0x1;
+                self.registers[REG_A] >>= 0x1;
+                self.registers[REG_A] |= (bit0 << 7);
+                if (bit0 != 0) self.flags |= FLAG_CARRY else self.flags &= ~FLAG_CARRY;
+                return;
+            },
+            // ral
+            0x17 => {
+                const bit7 = (self.registers[REG_A] >> 0x7) & 0x1;
+                const old_carry = self.flags & FLAG_CARRY;
+                self.registers[REG_A] <<= 0x1;
+                self.registers[REG_A] |= old_carry;
+                if (bit7 != 0) self.flags |= FLAG_CARRY else self.flags &= ~FLAG_CARRY;
+                return;
+            },
+            // rar
+            0x1F => {
+                const bit0 = self.registers[REG_A] & 0x1;
+                const old_carry = self.flags & FLAG_CARRY;
+                self.registers[REG_A] >>= 0x1;
+                self.registers[REG_A] |= old_carry << 0x7;
+                if (bit0 != 0) self.flags |= FLAG_CARRY else self.flags &= ~FLAG_CARRY;
+                return;
+            },
+            else => {},
+        }
+
         const inst = opcode & 0xF;
 
         switch (inst) {
             0x6, 0xE => self.mvi(opcode),
             0xB => self.dcx(opcode),
-            0x3 => self.inc(opcode),
+            0x3 => self.inx(opcode),
+            0x4, 0xC => self.inr(opcode),
+            0x5, 0xD => self.dcr(opcode),
             0x1 => self.lxi(opcode),
             else => {},
         }
@@ -96,7 +151,14 @@ pub const itl8080 = struct {
 
     fn branch(self: *itl8080, opcode: u8) void {
         switch (opcode) {
-            0xE9 => self.pc = (@as(u16, self.registers[REG_H]) << 8) | self.registers[REG_L], // pchl
+            0xE9 => {
+                self.pc = (@as(u16, self.registers[REG_H]) << 8) | self.registers[REG_L];
+                return;
+            }, // pchl
+            0xCD => {
+                self.callIf(true);
+                return;
+            }, // call
             else => {},
         }
 
@@ -117,6 +179,10 @@ pub const itl8080 = struct {
                     else => {},
                 }
             },
+            // Pops
+            0x1 => self.pop(opcode),
+            // Pushes
+            0x5 => self.push(opcode),
             // Jumps
             0x3 => self.jumpIf(true), // jmp
             0x2 => {
@@ -134,7 +200,6 @@ pub const itl8080 = struct {
                 }
             },
             // Calls
-            0x5 => self.callIf(true), // call
             0x4 => {
                 const condition = (opcode >> 3) & 0x7;
                 switch (condition) {
@@ -153,10 +218,43 @@ pub const itl8080 = struct {
         }
     }
 
+    fn pop(self: *itl8080, opcode: u8) void {
+        const condition = (opcode >> 4) & 0x3;
+        //            POP B   0xC1
+        //                    110000001
+        //                      ^^
+        // read bits 5-4
+        switch (condition) {
+            0b00 => self.popPair(REG_B, REG_C), // pop b
+            0b01 => self.popPair(REG_D, REG_E), // pop d
+            0b10 => self.popPair(REG_H, REG_L), // pop h
+            0b11 => self.popPSW(), // pop psw
+            else => {},
+        }
+    }
+
+    fn push(self: *itl8080, opcode: u8) void {
+        const condition = (opcode >> 4) & 0x3;
+        switch (condition) {
+            0b00 => self.pushPair(REG_B, REG_C), // push b
+            0b01 => self.pushPair(REG_D, REG_E), // push d
+            0b10 => self.pushPair(REG_H, REG_L), // push h
+            0b11 => self.pushPSW(), // push psw
+            else => {},
+        }
+    }
+
     fn mvi(self: *itl8080, opcode: u8) void {
         const destination = (opcode >> 3) & 0x7;
         const imm = self.memory[self.pc];
-        self.registers[destination] = imm;
+
+        if (destination == 0x6) {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            self.memory[addr] = imm;
+        } else {
+            self.registers[destination] = imm;
+        }
+
         self.pc += 1;
     }
 
@@ -180,7 +278,7 @@ pub const itl8080 = struct {
         }
     }
 
-    fn inc(self: *itl8080, opcode: u8) void {
+    fn inx(self: *itl8080, opcode: u8) void {
         const reg_pair = (opcode >> 4) & 0x3;
 
         // handle stack pointer
@@ -196,6 +294,50 @@ pub const itl8080 = struct {
 
             self.registers[first_reg] = new_high;
             self.registers[second_reg] = new_low;
+        }
+    }
+
+    fn inr(self: *itl8080, opcode: u8) void {
+        const dest = (opcode >> 3) & 0x7;
+        if (dest == 0x6) {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            const value = self.memory[addr] +% 1;
+            self.memory[addr] = value;
+            self.setAuxCarry(true, self.memory[addr], 1);
+            self.setParity(value);
+            self.setSign(value);
+            self.setZero(value);
+        } else {
+            const value = self.registers[dest] +% 1;
+            self.setAuxCarry(true, self.registers[dest], 1);
+            self.setParity(value);
+            self.setSign(value);
+            self.setZero(value);
+
+            self.registers[dest] = value;
+        }
+    }
+
+    fn dcr(self: *itl8080, opcode: u8) void {
+        const dest = (opcode >> 3) & 0x7;
+        if (dest == 0x6) {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            const value = self.memory[addr] -% 1;
+
+            self.setAuxCarry(false, self.memory[addr], 1);
+            self.setParity(value);
+            self.setSign(value);
+            self.setZero(value);
+
+            self.memory[addr] = value;
+        } else {
+            const value = self.registers[dest] -% 1;
+            self.setAuxCarry(false, self.registers[dest], 1);
+            self.setParity(value);
+            self.setSign(value);
+            self.setZero(value);
+
+            self.registers[dest] = value;
         }
     }
 
@@ -426,6 +568,32 @@ pub const itl8080 = struct {
         self.sp = self.sp -% 2;
         self.memory[self.sp] = @truncate(low_byte);
         self.memory[self.sp + 1] = @truncate(high_byte);
+    }
+
+    fn popPair(self: *itl8080, high_reg: u8, low_reg: u8) void {
+        const high = self.memory[self.sp + 1];
+        const low = self.memory[self.sp];
+        self.registers[high_reg] = high;
+        self.registers[low_reg] = low;
+        self.sp += 2;
+    }
+
+    fn popPSW(self: *itl8080) void {
+        self.flags = self.memory[self.sp];
+        self.registers[REG_A] = self.memory[self.sp + 1];
+        self.sp += 2;
+    }
+
+    fn pushPair(self: *itl8080, high_reg: u8, low_reg: u8) void {
+        self.sp -= 2;
+        self.memory[self.sp + 1] = self.registers[high_reg];
+        self.memory[self.sp] = self.registers[low_reg];
+    }
+
+    fn pushPSW(self: *itl8080) void {
+        self.sp -= 2;
+        self.memory[self.sp + 1] = self.registers[REG_A];
+        self.memory[self.sp] = self.flags;
     }
 
     fn getRegister16(self: *itl8080, reg_pair_id: u8) struct { u8, u8 } {
@@ -888,4 +1056,105 @@ test "cmp b compare accumulator with register B" {
 
     try std.testing.expect(cpu2.flags & FLAG_ZERO != 0);
     try std.testing.expect(cpu2.flags & FLAG_CARRY == 0);
+}
+
+test "inr register" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x01, 0x3C }); // mvi a, 1; inr a
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x02), cpu.registers[REG_A]);
+}
+
+test "inr memory" {
+    var cpu = itl8080.init(&[_]u8{ 0x21, 0x00, 0x20, 0x36, 0x05, 0x34 }); // lxi h, 0x2000; mvi m, 5; inr m
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x06), cpu.memory[0x2000]);
+}
+
+test "dcr register" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x05, 0x3D }); // mvi a, 5; dcr a
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x04), cpu.registers[REG_A]);
+}
+
+test "dcr memory" {
+    var cpu = itl8080.init(&[_]u8{ 0x21, 0x00, 0x20, 0x36, 0x01, 0x35 }); // lxi h, 0x2000; mvi m, 1; dcr m
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x00), cpu.memory[0x2000]);
+    try std.testing.expect(cpu.flags & FLAG_ZERO != 0);
+}
+
+test "push and pop bc pair" {
+    var cpu = itl8080.init(&[_]u8{ 0x01, 0x34, 0x12, 0xC5, 0x06, 0x00, 0x0E, 0x00, 0xC1 });
+    cpu.sp = 0x2000;
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.registers[REG_B]);
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.registers[REG_C]);
+}
+
+test "push and pop PSW" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0xAA, 0xF5, 0x3E, 0x00, 0xF1 });
+    cpu.sp = 0x2000;
+    cpu.flags = FLAG_ZERO | FLAG_CARRY;
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    cpu.flags = 0;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0xAA), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_ZERO != 0);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+}
+
+test "rlc rotate accumulator left" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x85, 0x07 });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x0B), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+}
+
+test "rrc rotate accumulator right" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x01, 0x0F });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x80), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+}
+
+test "ral rotate accumulator left through carry" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x80, 0x37, 0x17 });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x01), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+}
+
+test "rar rotate accumulator right through carry" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x01, 0x37, 0x1F });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x80), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
 }
