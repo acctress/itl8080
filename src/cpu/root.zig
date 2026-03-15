@@ -23,6 +23,7 @@ pub const itl8080 = struct {
     flags: u8,
     pc: u16,
     sp: u16,
+    halted: bool,
 
     pub fn init(data: []const u8) itl8080 {
         var memory: [MEMORY_SIZE]u8 = std.mem.zeroes([MEMORY_SIZE]u8);
@@ -34,10 +35,13 @@ pub const itl8080 = struct {
             .flags = 0,
             .pc = 0,
             .sp = 0,
+            .halted = false,
         };
     }
 
-    pub fn step(self: *itl8080) !void {
+    pub fn step(self: *itl8080) void {
+        if (self.halted) return;
+
         const opcode = self.memory[self.pc];
         self.pc += 1;
 
@@ -67,8 +71,11 @@ pub const itl8080 = struct {
     }
 
     fn transfer(self: *itl8080, opcode: u8) void {
-        if (opcode == 0x76) return; // HLT, handle properly
-        self.mov(opcode);
+        if (opcode == 0x76) { // hlt
+            self.halted = true;
+        } else {
+            self.mov(opcode);
+        }
     }
 
     fn arithmetic(self: *itl8080, opcode: u8) void {
@@ -77,6 +84,8 @@ pub const itl8080 = struct {
         switch (inst) {
             0x0 => self.add(opcode),
             0x1 => self.adc(opcode),
+            0x2 => self.sub(opcode),
+            0x3 => self.sbb(opcode),
             else => {},
         }
     }
@@ -130,11 +139,19 @@ pub const itl8080 = struct {
         }
     }
 
-    fn setAuxCarry(self: *itl8080, a: u8, b: u8) void {
-        if (((a & 0xF) + (b & 0xF)) > 0xF) {
-            self.flags |= FLAG_AUXILIARY;
+    fn setAuxCarry(self: *itl8080, adding: bool, a: u8, b: u8) void {
+        if (adding) {
+            if (((a & 0xF) + (b & 0xF)) > 0xF) {
+                self.flags |= FLAG_AUXILIARY;
+            } else {
+                self.flags &= ~FLAG_AUXILIARY;
+            }
         } else {
-            self.flags &= ~FLAG_AUXILIARY;
+            if (((a & 0xF) < (b & 0xF))) {
+                self.flags |= FLAG_AUXILIARY;
+            } else {
+                self.flags &= ~FLAG_AUXILIARY;
+            }
         }
     }
 
@@ -234,7 +251,7 @@ pub const itl8080 = struct {
         self.setSign(@truncate(result));
         self.setParity(@truncate(result));
         self.setCarry(result);
-        self.setAuxCarry(self.registers[REG_A], source_value);
+        self.setAuxCarry(true, self.registers[REG_A], source_value);
 
         self.registers[REG_A] = @truncate(result);
     }
@@ -256,7 +273,51 @@ pub const itl8080 = struct {
         self.setSign(@truncate(result));
         self.setParity(@truncate(result));
         self.setCarry(result);
-        self.setAuxCarry(self.registers[REG_A], source_value);
+        self.setAuxCarry(true, self.registers[REG_A], source_value);
+
+        self.registers[REG_A] = @truncate(result);
+    }
+
+    fn sub(self: *itl8080, opcode: u8) void {
+        const source = opcode & 0x7;
+
+        // memory
+        const source_value = if (source == 0x6) v: {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            break :v self.memory[addr];
+        } else v: {
+            break :v self.registers[source];
+        };
+
+        const result: u16 = @as(u16, self.registers[REG_A]) - @as(u16, source_value);
+
+        self.setZero(@truncate(result));
+        self.setSign(@truncate(result));
+        self.setParity(@truncate(result));
+        self.setCarry(result);
+        self.setAuxCarry(false, self.registers[REG_A], source_value);
+
+        self.registers[REG_A] = @truncate(result);
+    }
+
+    fn sbb(self: *itl8080, opcode: u8) void {
+        const source = opcode & 0x7;
+
+        // memory
+        const source_value = if (source == 0x6) v: {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            break :v self.memory[addr];
+        } else v: {
+            break :v self.registers[source];
+        };
+
+        const result: u16 = @as(u16, self.registers[REG_A]) - @as(u16, source_value) - (self.flags & FLAG_CARRY);
+
+        self.setZero(@truncate(result));
+        self.setSign(@truncate(result));
+        self.setParity(@truncate(result));
+        self.setCarry(result);
+        self.setAuxCarry(false, self.registers[REG_A], source_value);
 
         self.registers[REG_A] = @truncate(result);
     }
@@ -264,16 +325,16 @@ pub const itl8080 = struct {
 
 test "mvi b, 0xa" {
     var cpu: itl8080 = .init(&[_]u8{ 0x06, 0xA });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_B]);
 }
 
 test "mvi b, 0xa mov c, b" {
     var cpu: itl8080 = .init(&[_]u8{ 0x06, 0xA, 0x48 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_B]);
     try std.testing.expectEqual(0xA, cpu.registers[REG_C]);
@@ -281,7 +342,7 @@ test "mvi b, 0xa mov c, b" {
 
 test "lxi b, d16" {
     var cpu: itl8080 = .init(&[_]u8{ 0x01, 0x34, 0x12 });
-    try cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_B]);
     try std.testing.expectEqual(0x34, cpu.registers[REG_C]);
@@ -289,7 +350,7 @@ test "lxi b, d16" {
 
 test "lxi d, d16" {
     var cpu: itl8080 = .init(&[_]u8{ 0x11, 0x34, 0x12 });
-    try cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_D]);
     try std.testing.expectEqual(0x34, cpu.registers[REG_E]);
@@ -297,7 +358,7 @@ test "lxi d, d16" {
 
 test "lxi h, d16" {
     var cpu: itl8080 = .init(&[_]u8{ 0x21, 0x34, 0x12 });
-    try cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_H]);
     try std.testing.expectEqual(0x34, cpu.registers[REG_L]);
@@ -305,15 +366,15 @@ test "lxi h, d16" {
 
 test "lxi sp, d16" {
     var cpu: itl8080 = .init(&[_]u8{ 0x31, 0x34, 0x12 });
-    try cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x1234, cpu.sp);
 }
 
 test "lxi b, d16 inx b" {
     var cpu: itl8080 = .init(&[_]u8{ 0x01, 0x34, 0x12, 0x03 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_B]);
     try std.testing.expectEqual(0x35, cpu.registers[REG_C]);
@@ -321,8 +382,8 @@ test "lxi b, d16 inx b" {
 
 test "lxi d, d16 inx d" {
     var cpu: itl8080 = .init(&[_]u8{ 0x11, 0x34, 0x12, 0x13 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_D]);
     try std.testing.expectEqual(0x35, cpu.registers[REG_E]);
@@ -330,8 +391,8 @@ test "lxi d, d16 inx d" {
 
 test "lxi h, d16 inx h" {
     var cpu: itl8080 = .init(&[_]u8{ 0x21, 0x34, 0x12, 0x23 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_H]);
     try std.testing.expectEqual(0x35, cpu.registers[REG_L]);
@@ -339,16 +400,16 @@ test "lxi h, d16 inx h" {
 
 test "lxi sp, d16 inx sp" {
     var cpu: itl8080 = .init(&[_]u8{ 0x31, 0x34, 0x12, 0x33 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x1235, cpu.sp);
 }
 
 test "lxi b, d16 dcx b" {
     var cpu: itl8080 = .init(&[_]u8{ 0x01, 0x34, 0x12, 0x0B });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_B]);
     try std.testing.expectEqual(0x33, cpu.registers[REG_C]);
@@ -356,8 +417,8 @@ test "lxi b, d16 dcx b" {
 
 test "lxi d, d16 dcx d" {
     var cpu: itl8080 = .init(&[_]u8{ 0x11, 0x34, 0x12, 0x1B });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_D]);
     try std.testing.expectEqual(0x33, cpu.registers[REG_E]);
@@ -365,8 +426,8 @@ test "lxi d, d16 dcx d" {
 
 test "lxi h, d16 dcx h" {
     var cpu: itl8080 = .init(&[_]u8{ 0x21, 0x34, 0x12, 0x2B });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x12, cpu.registers[REG_H]);
     try std.testing.expectEqual(0x33, cpu.registers[REG_L]);
@@ -374,72 +435,90 @@ test "lxi h, d16 dcx h" {
 
 test "lxi sp, d16 dcx sp" {
     var cpu: itl8080 = .init(&[_]u8{ 0x31, 0x34, 0x12, 0x3B });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0x1233, cpu.sp);
 }
 
 test "mvi b, add b" {
     var cpu: itl8080 = .init(&[_]u8{ 0x06, 0xA, 0x80 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi c, add c" {
     var cpu: itl8080 = .init(&[_]u8{ 0x0E, 0xA, 0x81 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi d, add d" {
     var cpu: itl8080 = .init(&[_]u8{ 0x16, 0xA, 0x82 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi e, add e" {
     var cpu: itl8080 = .init(&[_]u8{ 0x1E, 0xA, 0x83 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi b, adc b" {
     var cpu: itl8080 = .init(&[_]u8{ 0x06, 0xA, 0x88 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi c, adc c" {
     var cpu: itl8080 = .init(&[_]u8{ 0x0E, 0xA, 0x89 });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi d, adc d" {
     var cpu: itl8080 = .init(&[_]u8{ 0x16, 0xA, 0x8A });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
 
 test "mvi e, adc e" {
     var cpu: itl8080 = .init(&[_]u8{ 0x1E, 0xA, 0x8B });
-    try cpu.step();
-    try cpu.step();
+    cpu.step();
+    cpu.step();
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi a, 0xa, mvi c, 0x5, sub c" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x3E, 0xA, 0x0E, 0x5, 0x91 });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(0x5, cpu.registers[REG_A]);
+}
+
+test "mvi a, 0xa, mvi c, 0x5, sbb c" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x3E, 0xA, 0x0E, 0x5, 0x99 });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(0x5, cpu.registers[REG_A]);
 }
