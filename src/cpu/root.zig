@@ -411,3 +411,35 @@ test "mvi e, add e" {
 
     try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
 }
+
+test "mvi b, adc b" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x06, 0xA, 0x88 });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi c, adc c" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x0E, 0xA, 0x89 });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi d, adc d" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x16, 0xA, 0x8A });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
+
+test "mvi e, adc e" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x1E, 0xA, 0x8B });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0xA, cpu.registers[REG_A]);
+}
