@@ -86,13 +86,21 @@ pub const itl8080 = struct {
             0x1 => self.adc(opcode),
             0x2 => self.sub(opcode),
             0x3 => self.sbb(opcode),
+            0x4 => self.ana(opcode),
+            0x5 => self.xra(opcode),
+            0x6 => self.ora(opcode),
+            0x7 => self.cmp(opcode),
             else => {},
         }
     }
 
     fn branch(self: *itl8080, opcode: u8) void {
-        const inst = opcode & 0x7;
+        switch (opcode) {
+            0xE9 => self.pc = (@as(u16, self.registers[REG_H]) << 8) | self.registers[REG_L], // pchl
+            else => {},
+        }
 
+        const inst = opcode & 0x7;
         switch (inst) {
             // Returns
             0x0 => {
@@ -106,6 +114,38 @@ pub const itl8080 = struct {
                     0b101 => self.rpe(),
                     0b110 => self.rp(),
                     0b111 => self.rm(),
+                    else => {},
+                }
+            },
+            // Jumps
+            0x3 => self.jumpIf(true), // jmp
+            0x2 => {
+                const condition = (opcode >> 3) & 0x7;
+                switch (condition) {
+                    0b000 => self.jumpIf(self.flags & FLAG_ZERO == 0), // jnz
+                    0b001 => self.jumpIf(self.flags & FLAG_ZERO != 0), // jz
+                    0b010 => self.jumpIf(self.flags & FLAG_CARRY == 0), // jnc
+                    0b011 => self.jumpIf(self.flags & FLAG_CARRY != 0), // jc
+                    0b100 => self.jumpIf(self.flags & FLAG_PARITY == 0), // jpo
+                    0b101 => self.jumpIf(self.flags & FLAG_PARITY != 0), // jpe
+                    0b110 => self.jumpIf(self.flags & FLAG_SIGN == 0), // jp
+                    0b111 => self.jumpIf(self.flags & FLAG_SIGN != 0), // jm
+                    else => {},
+                }
+            },
+            // Calls
+            0x5 => self.callIf(true), // call
+            0x4 => {
+                const condition = (opcode >> 3) & 0x7;
+                switch (condition) {
+                    0b000 => self.callIf(self.flags & FLAG_ZERO == 0), // cnz
+                    0b010 => self.callIf(self.flags & FLAG_CARRY == 0), // cnc
+                    0b100 => self.callIf(self.flags & FLAG_PARITY == 0), // cpo
+                    0b110 => self.callIf(self.flags & FLAG_SIGN == 0), // cp
+                    0b001 => self.callIf(self.flags & FLAG_ZERO != 0), // cz
+                    0b011 => self.callIf(self.flags & FLAG_CARRY != 0), // cc
+                    0b101 => self.callIf(self.flags & FLAG_PARITY != 0), // cpe
+                    0b111 => self.callIf(self.flags & FLAG_SIGN != 0), // cm
                     else => {},
                 }
             },
@@ -193,16 +233,7 @@ pub const itl8080 = struct {
     }
 
     fn add(self: *itl8080, opcode: u8) void {
-        const source = opcode & 0x7;
-
-        // memory
-        const source_value = if (source == 0x6) v: {
-            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
-            break :v self.memory[addr];
-        } else v: {
-            break :v self.registers[source];
-        };
-
+        const source_value = self.getSourceValueRM(opcode);
         const result: u16 = @as(u16, self.registers[REG_A]) + @as(u16, source_value);
 
         self.setZero(@truncate(result));
@@ -215,16 +246,7 @@ pub const itl8080 = struct {
     }
 
     fn adc(self: *itl8080, opcode: u8) void {
-        const source = opcode & 0x7;
-
-        // memory
-        const source_value = if (source == 0x6) v: {
-            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
-            break :v self.memory[addr];
-        } else v: {
-            break :v self.registers[source];
-        };
-
+        const source_value = self.getSourceValueRM(opcode);
         const result: u16 = @as(u16, self.registers[REG_A]) + @as(u16, source_value) + (self.flags & FLAG_CARRY);
 
         self.setZero(@truncate(result));
@@ -237,17 +259,27 @@ pub const itl8080 = struct {
     }
 
     fn sub(self: *itl8080, opcode: u8) void {
-        const source = opcode & 0x7;
+        const source_value = self.getSourceValueRM(opcode);
+        const A = self.registers[REG_A];
+        const result: u16 = @as(u16, A) -% @as(u16, source_value);
 
-        // memory
-        const source_value = if (source == 0x6) v: {
-            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
-            break :v self.memory[addr];
-        } else v: {
-            break :v self.registers[source];
-        };
+        self.setZero(@truncate(result));
+        self.setSign(@truncate(result));
+        self.setParity(@truncate(result));
 
-        const result: u16 = @as(u16, self.registers[REG_A]) - @as(u16, source_value);
+        if (A < source_value) {
+            self.flags |= FLAG_CARRY;
+        } else {
+            self.flags &= ~FLAG_CARRY;
+        }
+
+        self.setAuxCarry(false, self.registers[REG_A], source_value);
+        self.registers[REG_A] = @truncate(result);
+    }
+
+    fn sbb(self: *itl8080, opcode: u8) void {
+        const source_value = self.getSourceValueRM(opcode);
+        const result: u16 = @as(u16, self.registers[REG_A]) -% @as(u16, source_value) -% (self.flags & FLAG_CARRY);
 
         self.setZero(@truncate(result));
         self.setSign(@truncate(result));
@@ -258,26 +290,60 @@ pub const itl8080 = struct {
         self.registers[REG_A] = @truncate(result);
     }
 
-    fn sbb(self: *itl8080, opcode: u8) void {
-        const source = opcode & 0x7;
+    fn ana(self: *itl8080, opcode: u8) void {
+        const source_value = self.getSourceValueRM(opcode);
+        const result: u16 = @as(u16, self.registers[REG_A]) & @as(u16, source_value);
 
-        // memory
-        const source_value = if (source == 0x6) v: {
-            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
-            break :v self.memory[addr];
-        } else v: {
-            break :v self.registers[source];
-        };
+        self.flags &= ~FLAG_CARRY;
+        if ((self.registers[REG_A] | source_value) & 0x08 != 0) {
+            self.flags |= FLAG_AUXILIARY;
+        } else {
+            self.flags &= ~FLAG_AUXILIARY;
+        }
 
-        const result: u16 = @as(u16, self.registers[REG_A]) - @as(u16, source_value) - (self.flags & FLAG_CARRY);
+        self.registers[REG_A] = @truncate(result);
+        self.setSign(@truncate(result));
+        self.setZero(@truncate(result));
+        self.setParity(@truncate(result));
+    }
+
+    fn xra(self: *itl8080, opcode: u8) void {
+        const source_value = self.getSourceValueRM(opcode);
+        const result: u16 = @as(u16, self.registers[REG_A]) ^ @as(u16, source_value);
+
+        self.setSign(@truncate(result));
+        self.setZero(@truncate(result));
+        self.setParity(@truncate(result));
+
+        self.flags &= ~FLAG_CARRY;
+        self.flags &= ~FLAG_AUXILIARY;
+
+        self.registers[REG_A] = @truncate(result);
+    }
+
+    fn ora(self: *itl8080, opcode: u8) void {
+        const source_value = self.getSourceValueRM(opcode);
+        const result: u16 = @as(u16, self.registers[REG_A]) | @as(u16, source_value);
+
+        self.setSign(@truncate(result));
+        self.setZero(@truncate(result));
+        self.setParity(@truncate(result));
+
+        self.flags &= ~FLAG_CARRY;
+        self.flags &= ~FLAG_AUXILIARY;
+
+        self.registers[REG_A] = @truncate(result);
+    }
+
+    fn cmp(self: *itl8080, opcode: u8) void {
+        const source_value = self.getSourceValueRM(opcode);
+        const result: u16 = @as(u16, self.registers[REG_A]) -% @as(u16, source_value);
 
         self.setZero(@truncate(result));
         self.setSign(@truncate(result));
         self.setParity(@truncate(result));
         self.setCarry(result);
         self.setAuxCarry(false, self.registers[REG_A], source_value);
-
-        self.registers[REG_A] = @truncate(result);
     }
 
     fn rnz(self: *itl8080) void {
@@ -312,12 +378,54 @@ pub const itl8080 = struct {
         if (self.flags & FLAG_SIGN != 0) self.popStack();
     }
 
+    fn getSourceValueRM(self: *itl8080, opcode: u8) u8 {
+        return if (opcode & 0x7 == 0x6) v: {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+            break :v self.memory[addr];
+        } else v: {
+            break :v self.registers[opcode & 0x7];
+        };
+    }
+
+    fn jumpIf(self: *itl8080, condition: bool) void {
+        const low_byte = self.memory[self.pc];
+        const high_byte = self.memory[self.pc + 1];
+        const addr = @as(u16, high_byte) << 8 | low_byte;
+
+        if (condition) {
+            self.pc = addr;
+        } else {
+            self.pc += 2;
+        }
+    }
+
+    fn callIf(self: *itl8080, condition: bool) void {
+        const low_byte = self.memory[self.pc];
+        const high_byte = self.memory[self.pc + 1];
+        const addr = @as(u16, high_byte) << 8 | low_byte;
+
+        if (condition) {
+            self.pushStack(self.pc + 2);
+            self.pc = addr;
+        } else {
+            self.pc += 2;
+        }
+    }
+
     fn popStack(self: *itl8080) void {
         const low_byte = self.memory[self.sp];
         const high_byte = self.memory[self.sp + 1];
         const addr = @as(u16, high_byte) << 8 | low_byte;
         self.pc = addr;
         self.sp = self.sp +% 2;
+    }
+
+    fn pushStack(self: *itl8080, value: u16) void {
+        const low_byte = value & 0xFF;
+        const high_byte = value >> 8;
+        self.sp = self.sp -% 2;
+        self.memory[self.sp] = @truncate(low_byte);
+        self.memory[self.sp + 1] = @truncate(high_byte);
     }
 
     fn getRegister16(self: *itl8080, reg_pair_id: u8) struct { u8, u8 } {
@@ -629,4 +737,155 @@ test "rm should return when sign flag is set" {
     cpu.step();
 
     try std.testing.expectEqual(@as(u16, 0x4400), cpu.pc);
+}
+
+test "jmp uncondtionally setting pc to imm address" {
+    var cpu: itl8080 = .init(&[_]u8{ 0xC3, 0x34, 0x12 });
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x1234), cpu.pc);
+}
+
+test "jnz jump when zero flag is clear" {
+    var cpu: itl8080 = .init(&[_]u8{ 0xC2, 0x66, 0x55 });
+    cpu.flags &= ~FLAG_ZERO;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x5566), cpu.pc);
+}
+
+test "jnz no jump when zero flag is set" {
+    var cpu: itl8080 = .init(&[_]u8{ 0xC2, 0x66, 0x55 });
+    cpu.flags |= FLAG_ZERO;
+    cpu.step();
+
+    // 0x0003 because at pc 1, we read jnz, for all jump instructions except jmp,
+    // if the condition is false, then increment the pc by 2 as the size of
+    // jmp instructions is 3 bytes, minus 1 byte for the opcode.
+    try std.testing.expectEqual(@as(u16, 0x0003), cpu.pc);
+}
+
+test "jc jump when carry flag is set" {
+    var cpu: itl8080 = .init(&[_]u8{ 0xDA, 0x00, 0x10 });
+    cpu.flags |= FLAG_CARRY;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x1000), cpu.pc);
+}
+
+test "jpo jump when parity is clear (odd)" {
+    var cpu: itl8080 = .init(&[_]u8{ 0xE2, 0x00, 0x20 });
+    cpu.flags &= ~FLAG_PARITY;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x2000), cpu.pc);
+}
+
+test "pchl set pc to value in HL pair" {
+    var cpu: itl8080 = .init(&[_]u8{0xE9});
+    cpu.registers[REG_H] = 0xAB;
+    cpu.registers[REG_L] = 0xCD;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0xABCD), cpu.pc);
+}
+
+test "call unconditionally, push return address and jump" {
+    var cpu: itl8080 = .init(&[_]u8{ 0xCD, 0x34, 0x12, 0x00 });
+    cpu.sp = 0xFFFF;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x1234), cpu.pc); // target addr
+    try std.testing.expectEqual(@as(u16, 0xFFFD), cpu.sp); // stack pointer - 2
+    try std.testing.expectEqual(@as(u8, 0x03), cpu.memory[0xFFFD]); // lbyte
+    try std.testing.expectEqual(@as(u8, 0x00), cpu.memory[0xFFFE]); // hbyte
+}
+
+test "cnz call when zero flag is clear" {
+    var cpu = itl8080.init(&[_]u8{ 0xC4, 0x00, 0x10 });
+    cpu.sp = 0xFFFF;
+    cpu.flags &= ~FLAG_ZERO;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x1000), cpu.pc);
+    try std.testing.expectEqual(@as(u16, 0x0003), (@as(u16, cpu.memory[0xFFFE]) << 8) | cpu.memory[0xFFFD]);
+}
+
+test "cnz not call when zero flag is set" {
+    var cpu = itl8080.init(&[_]u8{ 0xC4, 0x00, 0x10 });
+    cpu.sp = 0xFFFF;
+    cpu.flags |= FLAG_ZERO;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x0003), cpu.pc);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), cpu.sp);
+}
+
+test "cc call when carry is set" {
+    var cpu = itl8080.init(&[_]u8{ 0xDC, 0x50, 0x00 });
+    cpu.sp = 0x1000;
+    cpu.flags |= FLAG_CARRY;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x0050), cpu.pc);
+    try std.testing.expectEqual(@as(u16, 0x0FFE), cpu.sp);
+}
+
+test "cpe call when parity is even" {
+    var cpu = itl8080.init(&[_]u8{ 0xEC, 0x00, 0x20 });
+    cpu.sp = 0xFFFF;
+    cpu.flags |= FLAG_PARITY;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x2000), cpu.pc);
+}
+
+test "ana b logical AND accumulator with register B" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0xFC, 0x06, 0x0F, 0xA0 });
+    cpu.step();
+    cpu.step();
+    cpu.flags |= FLAG_CARRY;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x0C), cpu.registers[REG_A]);
+    try std.testing.expectEqual(@as(u8, 0), cpu.flags & FLAG_CARRY);
+    try std.testing.expect(cpu.flags & FLAG_ZERO == 0);
+}
+
+test "xra a exclusive OR accumulator with itself clear a" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0xFF, 0xAF });
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x00), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_ZERO != 0);
+    try std.testing.expect(cpu.flags & FLAG_PARITY != 0);
+}
+
+test "ora c logical OR accumulator with register C" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x33, 0x0E, 0xCC, 0xB1 });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0xFF), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_SIGN != 0);
+}
+test "cmp b compare accumulator with register B" {
+    var cpu = itl8080.init(&[_]u8{ 0x3E, 0x05, 0x06, 0x0A, 0xB8 });
+    cpu.step();
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x05), cpu.registers[REG_A]);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+    try std.testing.expect(cpu.flags & FLAG_ZERO == 0);
+
+    var cpu2 = itl8080.init(&[_]u8{ 0x3E, 0x10, 0x06, 0x10, 0xB8 });
+    cpu2.step();
+    cpu2.step();
+    cpu2.step();
+
+    try std.testing.expect(cpu2.flags & FLAG_ZERO != 0);
+    try std.testing.expect(cpu2.flags & FLAG_CARRY == 0);
 }
