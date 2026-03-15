@@ -91,67 +91,25 @@ pub const itl8080 = struct {
     }
 
     fn branch(self: *itl8080, opcode: u8) void {
-        _ = self;
-        _ = opcode;
-    }
+        const inst = opcode & 0x7;
 
-    fn getRegister16(self: *itl8080, reg_pair_id: u8) struct { u8, u8 } {
-        _ = self;
-        switch (reg_pair_id) {
-            0b00 => return .{ REG_B, REG_C },
-            0b01 => return .{ REG_D, REG_E },
-            0b10 => return .{ REG_H, REG_L },
-            // 0b11 is for stack pointer, just return REG_A for now
-            else => return .{ REG_A, REG_A },
-        }
-    }
-
-    fn setZero(self: *itl8080, result: u8) void {
-        if (result == 0) {
-            self.flags |= FLAG_ZERO;
-        } else {
-            self.flags &= ~FLAG_ZERO;
-        }
-    }
-
-    fn setSign(self: *itl8080, result: u8) void {
-        // if most sig bit is 1, set sign flag
-        if (result & 0x80 != 0) {
-            self.flags |= FLAG_SIGN;
-        } else {
-            self.flags &= ~FLAG_SIGN;
-        }
-    }
-
-    fn setParity(self: *itl8080, result: u8) void {
-        if (@popCount(result) % 2 == 0) {
-            self.flags |= FLAG_PARITY;
-        } else {
-            self.flags &= ~FLAG_PARITY;
-        }
-    }
-
-    fn setCarry(self: *itl8080, result: u16) void {
-        if (result > 0xFF) {
-            self.flags |= FLAG_CARRY;
-        } else {
-            self.flags &= ~FLAG_CARRY;
-        }
-    }
-
-    fn setAuxCarry(self: *itl8080, adding: bool, a: u8, b: u8) void {
-        if (adding) {
-            if (((a & 0xF) + (b & 0xF)) > 0xF) {
-                self.flags |= FLAG_AUXILIARY;
-            } else {
-                self.flags &= ~FLAG_AUXILIARY;
-            }
-        } else {
-            if (((a & 0xF) < (b & 0xF))) {
-                self.flags |= FLAG_AUXILIARY;
-            } else {
-                self.flags &= ~FLAG_AUXILIARY;
-            }
+        switch (inst) {
+            // Returns
+            0x0 => {
+                const condition = (opcode >> 3) & 0x7;
+                switch (condition) {
+                    0b000 => self.rnz(),
+                    0b001 => self.rz(),
+                    0b010 => self.rnc(),
+                    0b011 => self.rc(),
+                    0b100 => self.rpo(),
+                    0b101 => self.rpe(),
+                    0b110 => self.rp(),
+                    0b111 => self.rm(),
+                    else => {},
+                }
+            },
+            else => {},
         }
     }
 
@@ -320,6 +278,106 @@ pub const itl8080 = struct {
         self.setAuxCarry(false, self.registers[REG_A], source_value);
 
         self.registers[REG_A] = @truncate(result);
+    }
+
+    fn rnz(self: *itl8080) void {
+        if (self.flags & FLAG_ZERO == 0) self.popStack();
+    }
+
+    fn rz(self: *itl8080) void {
+        if (self.flags & FLAG_ZERO != 0) self.popStack();
+    }
+
+    fn rc(self: *itl8080) void {
+        if (self.flags & FLAG_CARRY != 0) self.popStack();
+    }
+
+    fn rnc(self: *itl8080) void {
+        if (self.flags & FLAG_CARRY == 0) self.popStack();
+    }
+
+    fn rpo(self: *itl8080) void {
+        if (self.flags & FLAG_PARITY == 0) self.popStack();
+    }
+
+    fn rpe(self: *itl8080) void {
+        if (self.flags & FLAG_PARITY != 0) self.popStack();
+    }
+
+    fn rp(self: *itl8080) void {
+        if (self.flags & FLAG_SIGN == 0) self.popStack();
+    }
+
+    fn rm(self: *itl8080) void {
+        if (self.flags & FLAG_SIGN != 0) self.popStack();
+    }
+
+    fn popStack(self: *itl8080) void {
+        const low_byte = self.memory[self.sp];
+        const high_byte = self.memory[self.sp + 1];
+        const addr = @as(u16, high_byte) << 8 | low_byte;
+        self.pc = addr;
+        self.sp = self.sp +% 2;
+    }
+
+    fn getRegister16(self: *itl8080, reg_pair_id: u8) struct { u8, u8 } {
+        _ = self;
+        switch (reg_pair_id) {
+            0b00 => return .{ REG_B, REG_C },
+            0b01 => return .{ REG_D, REG_E },
+            0b10 => return .{ REG_H, REG_L },
+            // 0b11 is for stack pointer, just return REG_A for now
+            else => return .{ REG_A, REG_A },
+        }
+    }
+
+    fn setZero(self: *itl8080, result: u8) void {
+        if (result == 0) {
+            self.flags |= FLAG_ZERO;
+        } else {
+            self.flags &= ~FLAG_ZERO;
+        }
+    }
+
+    fn setSign(self: *itl8080, result: u8) void {
+        // if most sig bit is 1, set sign flag
+        if (result & 0x80 != 0) {
+            self.flags |= FLAG_SIGN;
+        } else {
+            self.flags &= ~FLAG_SIGN;
+        }
+    }
+
+    fn setParity(self: *itl8080, result: u8) void {
+        if (@popCount(result) % 2 == 0) {
+            self.flags |= FLAG_PARITY;
+        } else {
+            self.flags &= ~FLAG_PARITY;
+        }
+    }
+
+    fn setCarry(self: *itl8080, result: u16) void {
+        if (result > 0xFF) {
+            self.flags |= FLAG_CARRY;
+        } else {
+            self.flags &= ~FLAG_CARRY;
+        }
+    }
+
+    fn setAuxCarry(self: *itl8080, adding: bool, a: u8, b: u8) void {
+        if (adding) {
+            if (((a & 0xF) + (b & 0xF)) > 0xF) {
+                self.flags |= FLAG_AUXILIARY;
+            } else {
+                self.flags &= ~FLAG_AUXILIARY;
+            }
+        } else {
+            if (((a & 0xF) < (b & 0xF))) {
+                self.flags |= FLAG_AUXILIARY;
+            } else {
+                self.flags &= ~FLAG_AUXILIARY;
+            }
+        }
     }
 };
 
@@ -521,4 +579,54 @@ test "mvi a, 0xa, mvi c, 0x5, sbb c" {
     cpu.step();
 
     try std.testing.expectEqual(0x5, cpu.registers[REG_A]);
+}
+
+test "rnz should return when zero flag is not set" {
+    var cpu = itl8080.init(&[_]u8{0xC0});
+    cpu.sp = 0xFFFE;
+    cpu.memory[0xFFFE] = 0x34;
+    cpu.memory[0xFFFF] = 0x12;
+
+    cpu.flags &= ~FLAG_ZERO;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x1234), cpu.pc);
+    try std.testing.expectEqual(@as(u16, 0x0000), cpu.sp);
+}
+
+test "rnz should not return when zero flag is set" {
+    var cpu = itl8080.init(&[_]u8{0xC0});
+    cpu.sp = 0xFFFE;
+    cpu.memory[0xFFFE] = 0x34;
+    cpu.memory[0xFFFF] = 0x12;
+
+    cpu.flags |= FLAG_ZERO;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x0001), cpu.pc);
+    try std.testing.expectEqual(@as(u16, 0xFFFE), cpu.sp);
+}
+
+test "rpe should return when parity is evem" {
+    var cpu = itl8080.init(&[_]u8{0xE8});
+    cpu.sp = 0xFFFE;
+    cpu.memory[0xFFFE] = 0xBC;
+    cpu.memory[0xFFFF] = 0x9A;
+
+    cpu.flags |= FLAG_PARITY;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x9ABC), cpu.pc);
+}
+
+test "rm should return when sign flag is set" {
+    var cpu = itl8080.init(&[_]u8{0xF8});
+    cpu.sp = 0xFFFE;
+    cpu.memory[0xFFFE] = 0x00;
+    cpu.memory[0xFFFF] = 0x44;
+
+    cpu.flags |= FLAG_SIGN;
+    cpu.step();
+
+    try std.testing.expectEqual(@as(u16, 0x4400), cpu.pc);
 }
