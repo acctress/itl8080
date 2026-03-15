@@ -55,75 +55,20 @@ pub const itl8080 = struct {
     }
 
     fn control(self: *itl8080, opcode: u8) void {
-        const inst = opcode & 0x7;
+        const inst = opcode & 0xF;
 
         switch (inst) {
-            // MVI
-            0x6 => {
-                const destination = (opcode >> 3) & 0x7;
-                const imm = self.memory[self.pc];
-                self.registers[destination] = imm;
-                self.pc += 1;
-            },
-
-            // INX
-            0x3 => {
-                const reg_pair = (opcode >> 4) & 0x3;
-
-                // handle stack pointer
-                if (reg_pair == 0b11) {
-                    self.sp += 1;
-                } else {
-                    const first_reg, const second_reg = self.getRegister16(reg_pair);
-                    const low_byte = self.registers[second_reg];
-                    const high_byte = self.registers[first_reg];
-                    const value = (@as(u16, high_byte) << 8 | low_byte) + 1;
-                    const new_high: u8 = @truncate(value >> 8);
-                    const new_low: u8 = @truncate(value & 0xFF);
-
-                    self.registers[first_reg] = new_high;
-                    self.registers[second_reg] = new_low;
-                }
-            },
-
-            // LXI
-            0x1 => {
-                const low_byte = self.memory[self.pc];
-                const high_byte = self.memory[self.pc + 1];
-                const value = @as(u16, high_byte) << 8 | low_byte;
-                const reg_pair = (opcode >> 4) & 0x3;
-
-                // handle stack pointer
-                if (reg_pair == 0b11) {
-                    self.sp = value;
-                } else {
-                    const first_reg, const second_reg = self.getRegister16(reg_pair);
-                    self.registers[first_reg] = high_byte;
-                    self.registers[second_reg] = low_byte;
-                }
-
-                self.pc += 2;
-            },
-
+            0x6 => self.mvi(opcode),
+            0xB => self.dcx(opcode),
+            0x3 => self.inc(opcode),
+            0x1 => self.lxi(opcode),
             else => {},
         }
     }
 
     fn transfer(self: *itl8080, opcode: u8) void {
         if (opcode == 0x76) return; // HLT, handle properly
-
-        const destination = (opcode >> 3) & 0x7;
-        const source = opcode & 0x7;
-
-        // MOV
-        if (destination == 0x6 or source == 0x6) {
-            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
-
-            if (destination == 0x6) self.memory[addr] = self.registers[source];
-            if (source == 0x6) self.registers[destination] = self.memory[addr];
-        } else {
-            self.registers[destination] = self.registers[source];
-        }
+        self.mov(opcode);
     }
 
     fn arithmetic(self: *itl8080, opcode: u8) void {
@@ -144,6 +89,85 @@ pub const itl8080 = struct {
             0b10 => return .{ REG_H, REG_L },
             // 0b11 is for stack pointer, just return REG_A for now
             else => return .{ REG_A, REG_A },
+        }
+    }
+
+    fn mvi(self: *itl8080, opcode: u8) void {
+        const destination = (opcode >> 3) & 0x7;
+        const imm = self.memory[self.pc];
+        self.registers[destination] = imm;
+        self.pc += 1;
+    }
+
+    fn dcx(self: *itl8080, opcode: u8) void {
+        const reg_pair = (opcode >> 4) & 0x3;
+
+        // handle stack pointer
+        if (reg_pair == 0b11) {
+            const dec = self.sp -% 1;
+            self.sp = dec;
+        } else {
+            const first_reg, const second_reg = self.getRegister16(reg_pair);
+            const low_byte = self.registers[second_reg];
+            const high_byte = self.registers[first_reg];
+            const value = (@as(u16, high_byte) << 8 | low_byte) - 1;
+            const new_high: u8 = @truncate(value >> 8);
+            const new_low: u8 = @truncate(value & 0xFF);
+
+            self.registers[first_reg] = new_high;
+            self.registers[second_reg] = new_low;
+        }
+    }
+
+    fn inc(self: *itl8080, opcode: u8) void {
+        const reg_pair = (opcode >> 4) & 0x3;
+
+        // handle stack pointer
+        if (reg_pair == 0b11) {
+            self.sp += 1;
+        } else {
+            const first_reg, const second_reg = self.getRegister16(reg_pair);
+            const low_byte = self.registers[second_reg];
+            const high_byte = self.registers[first_reg];
+            const value = (@as(u16, high_byte) << 8 | low_byte) + 1;
+            const new_high: u8 = @truncate(value >> 8);
+            const new_low: u8 = @truncate(value & 0xFF);
+
+            self.registers[first_reg] = new_high;
+            self.registers[second_reg] = new_low;
+        }
+    }
+
+    fn lxi(self: *itl8080, opcode: u8) void {
+        const low_byte = self.memory[self.pc];
+        const high_byte = self.memory[self.pc + 1];
+        const value = @as(u16, high_byte) << 8 | low_byte;
+        const reg_pair = (opcode >> 4) & 0x3;
+
+        // handle stack pointer
+        if (reg_pair == 0b11) {
+            self.sp = value;
+        } else {
+            const first_reg, const second_reg = self.getRegister16(reg_pair);
+            self.registers[first_reg] = high_byte;
+            self.registers[second_reg] = low_byte;
+        }
+
+        self.pc += 2;
+    }
+
+    fn mov(self: *itl8080, opcode: u8) void {
+        const destination = (opcode >> 3) & 0x7;
+        const source = opcode & 0x7;
+
+        // MOV
+        if (destination == 0x6 or source == 0x6) {
+            const addr = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+
+            if (destination == 0x6) self.memory[addr] = self.registers[source];
+            if (source == 0x6) self.registers[destination] = self.memory[addr];
+        } else {
+            self.registers[destination] = self.registers[source];
         }
     }
 };
@@ -229,4 +253,39 @@ test "lxi sp, d16 inx sp" {
     try cpu.step();
 
     try std.testing.expectEqual(0x1235, cpu.sp);
+}
+
+test "lxi b, d16 dcx b" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x01, 0x34, 0x12, 0x0B });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0x12, cpu.registers[REG_B]);
+    try std.testing.expectEqual(0x33, cpu.registers[REG_C]);
+}
+
+test "lxi d, d16 dcx d" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x11, 0x34, 0x12, 0x1B });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0x12, cpu.registers[REG_D]);
+    try std.testing.expectEqual(0x33, cpu.registers[REG_E]);
+}
+
+test "lxi h, d16 dcx h" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x21, 0x34, 0x12, 0x2B });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0x12, cpu.registers[REG_H]);
+    try std.testing.expectEqual(0x33, cpu.registers[REG_L]);
+}
+
+test "lxi sp, d16 dcx sp" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x31, 0x34, 0x12, 0x3B });
+    try cpu.step();
+    try cpu.step();
+
+    try std.testing.expectEqual(0x1233, cpu.sp);
 }
