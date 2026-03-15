@@ -1,6 +1,8 @@
 # itl8080
 An emulator for the Intel 8080 CPU Instruction Set
 
+**Check out the tests in `src/cpu/root.zig`**
+
 # Specs & Mental Logs
 ### Registers
 A static RAM array organised into six 16-bit registers.
