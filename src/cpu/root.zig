@@ -125,6 +125,7 @@ pub const itl8080 = struct {
             0x4, 0xC => self.inr(opcode),
             0x5, 0xD => self.dcr(opcode),
             0x1 => self.lxi(opcode),
+            0x9 => self.dad(opcode),
             else => {},
         }
     }
@@ -433,6 +434,28 @@ pub const itl8080 = struct {
 
             self.registers[first_reg] = new_high;
             self.registers[second_reg] = new_low;
+        }
+    }
+
+    fn dad(self: *itl8080, opcode: u8) void {
+        const reg_pair = (opcode >> 4) & 0x3;
+        const value = if (reg_pair == 0b11) b: {
+            break :b self.sp;
+        } else b: {
+            const first_reg, const second_reg = self.getRegister16(reg_pair);
+            const v = @as(u16, self.registers[first_reg]) << 8 | self.registers[second_reg];
+            break :b v;
+        };
+
+        const hl = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+        const result = @as(u32, hl) + @as(u32, value);
+        self.registers[REG_H] = @truncate((result >> 8) & 0xFF);
+        self.registers[REG_L] = @truncate(result & 0xFF);
+
+        if (result > 0xFFFF) {
+            self.flags |= FLAG_CARRY;
+        } else {
+            self.flags &= ~FLAG_CARRY;
         }
     }
 
@@ -1420,4 +1443,38 @@ test "sbi immediate" {
     cpu.flags |= FLAG_CARRY;
     cpu.step();
     try std.testing.expectEqual(@as(u8, 0x03), cpu.registers[REG_A]);
+}
+
+test "dad b" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x01, 0x01, 0x01, 0x09 });
+    cpu.registers[REG_H] = 0x00;
+    cpu.registers[REG_L] = 0x01;
+    cpu.step();
+    cpu.step();
+
+    try std.testing.expectEqual(0x01, cpu.registers[REG_H]);
+    try std.testing.expectEqual(0x02, cpu.registers[REG_L]);
+    try std.testing.expectEqual(0, cpu.flags & FLAG_CARRY);
+}
+
+test "dad h carry" {
+    var cpu: itl8080 = .init(&[_]u8{0x29});
+    cpu.registers[REG_H] = 0x80;
+    cpu.registers[REG_L] = 0x00;
+    cpu.step();
+
+    try std.testing.expectEqual(0x00, cpu.registers[REG_H]);
+    try std.testing.expectEqual(0x00, cpu.registers[REG_L]);
+    try std.testing.expect(cpu.flags & FLAG_CARRY != 0);
+}
+
+test "dad sp" {
+    var cpu: itl8080 = .init(&[_]u8{0x39});
+    cpu.registers[REG_H] = 0x00;
+    cpu.registers[REG_L] = 0x01;
+    cpu.sp = 0x0002;
+    cpu.step();
+
+    try std.testing.expectEqual(0x00, cpu.registers[REG_H]);
+    try std.testing.expectEqual(0x03, cpu.registers[REG_L]);
 }
