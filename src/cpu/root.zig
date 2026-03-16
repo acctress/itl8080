@@ -113,6 +113,56 @@ pub const itl8080 = struct {
                 if (bit0 != 0) self.flags |= FLAG_CARRY else self.flags &= ~FLAG_CARRY;
                 return;
             },
+            // stax b
+            0x02 => {
+                self.memory[(@as(u16, self.registers[REG_B]) << 8) | self.registers[REG_C]] = self.registers[REG_A];
+                return;
+            },
+            // stax d
+            0x12 => {
+                self.memory[(@as(u16, self.registers[REG_D]) << 8) | self.registers[REG_E]] = self.registers[REG_A];
+                return;
+            },
+            // ldax b
+            0x0A => {
+                self.registers[REG_A] = self.memory[(@as(u16, self.registers[REG_B]) << 8) | self.registers[REG_C]];
+                return;
+            },
+            // ldax d
+            0x1A => {
+                self.registers[REG_A] = self.memory[(@as(u16, self.registers[REG_D]) << 8) | self.registers[REG_E]];
+                return;
+            },
+            // sta a16
+            0x32 => {
+                const addr = self.memory[self.pc] | (@as(u16, self.memory[self.pc + 1]) << 8);
+                self.memory[addr] = self.registers[REG_A];
+                self.pc += 2;
+                return;
+            },
+            // lda a16
+            0x3A => {
+                const addr = self.memory[self.pc] | (@as(u16, self.memory[self.pc + 1]) << 8);
+                self.registers[REG_A] = self.memory[addr];
+                self.pc += 2;
+                return;
+            },
+            // shld
+            0x22 => {
+                const addr = self.memory[self.pc] | (@as(u16, self.memory[self.pc + 1]) << 8);
+                self.memory[addr] = self.registers[REG_L];
+                self.memory[addr + 1] = self.registers[REG_H];
+                self.pc += 2;
+                return;
+            },
+            // lhld
+            0x2A => {
+                const addr = self.memory[self.pc] | (@as(u16, self.memory[self.pc + 1]) << 8);
+                self.registers[REG_L] = self.memory[addr];
+                self.registers[REG_H] = self.memory[addr + 1];
+                self.pc += 2;
+                return;
+            },
             else => {},
         }
 
@@ -1477,4 +1527,60 @@ test "dad sp" {
 
     try std.testing.expectEqual(0x00, cpu.registers[REG_H]);
     try std.testing.expectEqual(0x03, cpu.registers[REG_L]);
+}
+
+test "stax b and ldax b" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x02, 0x0A });
+    cpu.registers[REG_B] = 0x20;
+    cpu.registers[REG_C] = 0x00;
+    cpu.registers[REG_A] = 0xDE;
+
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xDE), cpu.memory[0x2000]);
+
+    cpu.registers[REG_A] = 0x00;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xDE), cpu.registers[REG_A]);
+}
+
+test "stax d and ldax d" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x12, 0x1A });
+    cpu.registers[REG_D] = 0x30;
+    cpu.registers[REG_E] = 0x55;
+    cpu.registers[REG_A] = 0xAD;
+
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xAD), cpu.memory[0x3055]);
+
+    cpu.registers[REG_A] = 0x00;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xAD), cpu.registers[REG_A]);
+}
+
+test "sta and lda a16" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x32, 0x00, 0x40, 0x3A, 0x00, 0x40 });
+    cpu.registers[REG_A] = 0xBE;
+
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xBE), cpu.memory[0x4000]);
+
+    cpu.registers[REG_A] = 0x00;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xBE), cpu.registers[REG_A]);
+}
+
+test "shld and lhld a16" {
+    var cpu: itl8080 = .init(&[_]u8{ 0x22, 0x00, 0x50, 0x2A, 0x00, 0x50 });
+    cpu.registers[REG_H] = 0x12;
+    cpu.registers[REG_L] = 0x34;
+
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.memory[0x5000]);
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.memory[0x5001]);
+
+    cpu.registers[REG_H] = 0x00;
+    cpu.registers[REG_L] = 0x00;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.registers[REG_H]);
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.registers[REG_L]);
 }
