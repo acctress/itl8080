@@ -25,6 +25,7 @@ pub const itl8080 = struct {
     pc: u16,
     sp: u16,
     halted: bool,
+    interrupts_enabled: bool,
 
     pub fn init(data: []const u8) itl8080 {
         var memory: [MEMORY_SIZE]u8 = std.mem.zeroes([MEMORY_SIZE]u8);
@@ -38,6 +39,7 @@ pub const itl8080 = struct {
             .pc = 0,
             .sp = 0,
             .halted = false,
+            .interrupts_enabled = false,
         };
     }
 
@@ -172,7 +174,149 @@ pub const itl8080 = struct {
                 self.ports[port] = self.registers[REG_A];
                 self.pc += 1;
                 return;
-            }, // input
+            }, // output
+            0xEB => {
+                const th = self.registers[REG_H];
+                const tl = self.registers[REG_L];
+                self.registers[REG_H] = self.registers[REG_D];
+                self.registers[REG_L] = self.registers[REG_E];
+                self.registers[REG_D] = th;
+                self.registers[REG_E] = tl;
+                return;
+            }, // xchg
+            0xF3 => {
+                self.interrupts_enabled = false;
+                return;
+            }, // di
+            0xFB => {
+                self.interrupts_enabled = true;
+                return;
+            }, // di
+            0xF9 => {
+                const hl = @as(u16, self.registers[REG_H]) << 8 | self.registers[REG_L];
+                self.sp = hl;
+                return;
+            }, // sphl
+            0xE6 => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) & @as(u16, source_value);
+
+                self.flags &= ~FLAG_CARRY;
+                if ((self.registers[REG_A] | source_value) & 0x08 != 0) {
+                    self.flags |= FLAG_AUXILIARY;
+                } else {
+                    self.flags &= ~FLAG_AUXILIARY;
+                }
+
+                self.registers[REG_A] = @truncate(result);
+                self.setSign(@truncate(result));
+                self.setZero(@truncate(result));
+                self.setParity(@truncate(result));
+                self.pc += 1;
+
+                return;
+            }, // ani
+            0xF6 => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) | @as(u16, source_value);
+
+                self.setSign(@truncate(result));
+                self.setZero(@truncate(result));
+                self.setParity(@truncate(result));
+
+                self.flags &= ~FLAG_CARRY;
+                self.flags &= ~FLAG_AUXILIARY;
+
+                self.registers[REG_A] = @truncate(result);
+                self.pc += 1;
+
+                return;
+            }, // ori
+            0xEE => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) ^ @as(u16, source_value);
+
+                self.setSign(@truncate(result));
+                self.setZero(@truncate(result));
+                self.setParity(@truncate(result));
+
+                self.flags &= ~FLAG_CARRY;
+                self.flags &= ~FLAG_AUXILIARY;
+
+                self.registers[REG_A] = @truncate(result);
+                self.pc += 1;
+
+                return;
+            }, // xri
+            0xFE => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) -% @as(u16, source_value);
+
+                self.setZero(@truncate(result));
+                self.setSign(@truncate(result));
+                self.setParity(@truncate(result));
+                self.setCarry(result);
+                self.setAuxCarry(false, self.registers[REG_A], source_value);
+                self.pc += 1;
+
+                return;
+            }, // cpi
+            0xC6 => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) + @as(u16, source_value);
+
+                self.setZero(@truncate(result));
+                self.setSign(@truncate(result));
+                self.setParity(@truncate(result));
+                self.setCarry(result);
+                self.setAuxCarry(true, self.registers[REG_A], source_value);
+
+                self.registers[REG_A] = @truncate(result);
+                self.pc += 1;
+                return;
+            }, // adi
+            0xD6 => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) -% @as(u16, source_value);
+
+                self.setZero(@truncate(result));
+                self.setSign(@truncate(result));
+                self.setParity(@truncate(result));
+                self.setCarry(result);
+                self.setAuxCarry(false, self.registers[REG_A], source_value);
+
+                self.registers[REG_A] = @truncate(result);
+                self.pc += 1;
+                return;
+            }, // sui
+            0xCE => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) + @as(u16, source_value) + (self.flags & FLAG_CARRY);
+
+                self.setZero(@truncate(result));
+                self.setSign(@truncate(result));
+                self.setParity(@truncate(result));
+                self.setCarry(result);
+                self.setAuxCarry(true, self.registers[REG_A], source_value);
+
+                self.registers[REG_A] = @truncate(result);
+                self.pc += 1;
+                return;
+            }, // aci
+            0xDE => {
+                const source_value = self.memory[self.pc];
+                const result: u16 = @as(u16, self.registers[REG_A]) -% @as(u16, source_value) -% (self.flags & FLAG_CARRY);
+
+                self.setZero(@truncate(result));
+                self.setSign(@truncate(result));
+                self.setParity(@truncate(result));
+                self.setCarry(result);
+                self.setAuxCarry(false, self.registers[REG_A], source_value);
+
+                self.registers[REG_A] = @truncate(result);
+                self.pc += 1;
+                return;
+            }, // sbi
             else => {},
         }
 
@@ -1189,4 +1333,91 @@ test "out write to port" {
 
     try std.testing.expectEqual(@as(u8, 0x55), cpu.ports[0x0A]);
     try std.testing.expectEqual(@as(u16, 0x0002), cpu.pc);
+}
+
+test "xchg registers" {
+    var cpu = itl8080.init(&[_]u8{0xEB});
+    cpu.registers[REG_H] = 0xAA;
+    cpu.registers[REG_L] = 0xBB;
+    cpu.registers[REG_D] = 0x11;
+    cpu.registers[REG_E] = 0x22;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x11), cpu.registers[REG_H]);
+    try std.testing.expectEqual(@as(u8, 0x22), cpu.registers[REG_L]);
+    try std.testing.expectEqual(@as(u8, 0xAA), cpu.registers[REG_D]);
+    try std.testing.expectEqual(@as(u8, 0xBB), cpu.registers[REG_E]);
+}
+
+test "di / ei flags" {
+    var cpu = itl8080.init(&[_]u8{ 0xF3, 0xFB });
+    cpu.step();
+    try std.testing.expectEqual(false, cpu.interrupts_enabled);
+    cpu.step();
+    try std.testing.expectEqual(true, cpu.interrupts_enabled);
+}
+
+test "sphl" {
+    var cpu = itl8080.init(&[_]u8{0xF9});
+    cpu.registers[REG_H] = 0xDE;
+    cpu.registers[REG_L] = 0xAD;
+    cpu.step();
+    try std.testing.expectEqual(@as(u16, 0xDEAD), cpu.sp);
+}
+
+test "ani immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xE6, 0x0F });
+    cpu.registers[REG_A] = 0xFF;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x0F), cpu.registers[REG_A]);
+}
+
+test "ori immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xF6, 0x01 });
+    cpu.registers[REG_A] = 0xAA;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0xAB), cpu.registers[REG_A]);
+}
+
+test "xri immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xEE, 0xFF });
+    cpu.registers[REG_A] = 0xAA;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x55), cpu.registers[REG_A]);
+}
+
+test "cpi immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xFE, 0x05 });
+    cpu.registers[REG_A] = 0x05;
+    cpu.step();
+    try std.testing.expect(cpu.flags & FLAG_ZERO != 0);
+}
+
+test "adi immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xC6, 0x05 });
+    cpu.registers[REG_A] = 0x05;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x0A), cpu.registers[REG_A]);
+}
+
+test "sui immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xD6, 0x02 });
+    cpu.registers[REG_A] = 0x05;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x03), cpu.registers[REG_A]);
+}
+
+test "aci immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xCE, 0x01 });
+    cpu.registers[REG_A] = 0x01;
+    cpu.flags |= FLAG_CARRY;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x03), cpu.registers[REG_A]);
+}
+
+test "sbi immediate" {
+    var cpu = itl8080.init(&[_]u8{ 0xDE, 0x01 });
+    cpu.registers[REG_A] = 0x05;
+    cpu.flags |= FLAG_CARRY;
+    cpu.step();
+    try std.testing.expectEqual(@as(u8, 0x03), cpu.registers[REG_A]);
 }
